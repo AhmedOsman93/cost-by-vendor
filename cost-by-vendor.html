@@ -378,14 +378,67 @@ let chartInst     = null;
 ───────────────────────────────────────────────── */
 function parseDate(s) {
   if (!s) return null;
-  let d = new Date(s);
-  if (!isNaN(d)) return d;
-  const p = String(s).split('/');
-  if (p.length === 3) {
-    d = new Date(`${p[2]}-${p[0].padStart(2,'0')}-${p[1].padStart(2,'0')}`);
-    if (!isNaN(d)) return d;
+  const str = String(s).trim();
+  if (!str) return null;
+
+  // Google Sheets / Excel serial number (integers ~30000–60000 = years 1982–2064)
+  if (/^\d+$/.test(str)) {
+    const n = parseInt(str, 10);
+    if (n > 30000 && n < 60000) {
+      return new Date(Date.UTC(1899, 11, 30) + n * 86400000);
+    }
+    return null; // small integers (day-of-month) are not stand-alone dates
   }
+
+  // ISO: YYYY-MM-DD — parse as UTC to avoid timezone shifts
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+    const d = new Date(str.slice(0, 10) + 'T00:00:00Z');
+    if (!isNaN(d) && d.getFullYear() > 2000) return d;
+  }
+
+  // Slash-separated: figure out DD/MM/YYYY vs MM/DD/YYYY
+  const p = str.split('/');
+  if (p.length === 3) {
+    const [a, b, c] = p.map(x => parseInt(x, 10));
+    const yr = c > 100 ? c : c + 2000; // handle 2-digit years
+    if (yr > 2000 && yr < 2060) {
+      if (a > 12) return new Date(Date.UTC(yr, b - 1, a)); // definitely DD/MM
+      if (b > 12) return new Date(Date.UTC(yr, a - 1, b)); // definitely MM/DD
+      return new Date(Date.UTC(yr, a - 1, b));             // assume MM/DD
+    }
+  }
+
+  // Natural language fallback — only accept if year looks sane
+  const d = new Date(str);
+  if (!isNaN(d) && d.getFullYear() > 2000 && d.getFullYear() < 2060) return d;
+
   return null;
+}
+
+// Construct a date from a "Month" column value ("January 2024", "2024-01", etc.)
+// combined with a day-of-month integer.
+function dateFromMonthAndDay(monthStr, dayNum) {
+  if (!monthStr) return null;
+  const m = String(monthStr).trim();
+  const day = parseInt(dayNum, 10) || 1;
+
+  // "January 2024" or "Jan 2024"
+  const m1 = m.match(/([a-zA-Z]+)\s+(\d{4})/);
+  if (m1) {
+    const d = new Date(`${m1[1]} 1, ${m1[2]}`);
+    if (!isNaN(d) && d.getFullYear() > 2000)
+      return new Date(Date.UTC(d.getFullYear(), d.getMonth(), day));
+  }
+
+  // "2024-01" or "2024/01"
+  const m2 = m.match(/(\d{4})[-\/](\d{1,2})/);
+  if (m2) {
+    const yr = parseInt(m2[1], 10), mo = parseInt(m2[2], 10);
+    if (yr > 2000) return new Date(Date.UTC(yr, mo - 1, day));
+  }
+
+  // Maybe Month is itself a full date
+  return parseDate(m);
 }
 const fmtDate = d => d.toISOString().split('T')[0];
 const fmtUSD  = n => new Intl.NumberFormat('en-US', {
@@ -477,28 +530,48 @@ async function loadSheet() {
 
 function parseSheet(results) {
   const fields = results.meta.fields || [];
-  // Auto-detect columns (case-insensitive, handles "Day", "Date", "day", etc.)
-  let dayCol, vendorCol, costCol;
+
+  // ── Column detection ──────────────────────────────────────────────────────
+  let dayCol, monthCol, vendorCol, costCol;
   for (const f of fields) {
     const n = f.toLowerCase().trim();
     if (!dayCol    && (n === 'day' || n === 'date' || n.startsWith('day'))) dayCol = f;
+    if (!monthCol  && n === 'month') monthCol = f;
     if (!vendorCol && (n.includes('vendor') || n.includes('source') || n.includes('channel') || n === 'network')) vendorCol = f;
     if (!costCol   && (n.includes('cost') || n.includes('spend') || n.includes('amount'))) costCol = f;
   }
-  // Positional fallback if detection failed
+  // Positional fallback
   if (!dayCol)    dayCol    = fields[0];
   if (!vendorCol) vendorCol = fields[2];
   if (!costCol)   costCol   = fields[3];
 
+  // Log a sample row so we can see the raw format if anything goes wrong
+  if (results.data.length > 0) {
+    console.log('Columns detected →', { dayCol, monthCol, vendorCol, costCol });
+    console.log('Sample row       →', results.data[0]);
+  }
+
+  // ── Row parsing ───────────────────────────────────────────────────────────
   const rows = [];
   for (const r of results.data) {
-    const d = parseDate(r[dayCol]);
-    if (!d) continue;
+    // Try parsing the Day column as a full date first
+    let d = parseDate(r[dayCol]);
+
+    // If that failed or returned an implausible year, combine Month + Day
+    if (!d || d.getFullYear() < 2010 || d.getFullYear() > 2040) {
+      const dayNum = parseInt(String(r[dayCol] || '1'), 10);
+      d = dateFromMonthAndDay(monthCol ? r[monthCol] : null, dayNum);
+    }
+
+    if (!d || d.getFullYear() < 2010 || d.getFullYear() > 2040) continue;
+
     const vendor = String(r[vendorCol] || '').trim();
     if (!vendor) continue;
-    const cost = parseFloat(String(r[costCol] || '0').replace(/[$,\s]/g,'')) || 0;
+    const cost = parseFloat(String(r[costCol] || '0').replace(/[$,\s]/g, '')) || 0;
     rows.push({ date: d, dateKey: fmtDate(d), vendor, cost });
   }
+
+  console.log(`Parsed ${rows.length} valid rows from ${results.data.length} raw rows`);
   return rows;
 }
 
