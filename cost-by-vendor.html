@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cost by Vendor · Growth Marketing</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --pf-red:    #D94F15;
+      --pf-red-dk: #B83E0E;
+      --bg:        #F4F5F9;
+      --surface:   #FFFFFF;
+      --border:    #E4E7EF;
+      --text-1:    #111827;
+      --text-2:    #6B7280;
+      --text-3:    #9CA3AF;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text-1);
+      min-height: 100vh;
+    }
+
+    /* ── HEADER ─────────────────────────────── */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 32px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .pf-logo {
+      width: 34px; height: 34px;
+      background: var(--pf-red);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-weight: 800; font-size: 13px; letter-spacing: -0.5px;
+      flex-shrink: 0;
+    }
+    .header-title   { font-size: 15px; font-weight: 700; color: var(--text-1); }
+    .header-sub     { font-size: 11px; color: var(--text-2); margin-top: 1px; }
+    .fetch-badge {
+      font-size: 11px; color: var(--text-3);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 4px 10px; border-radius: 20px;
+    }
+
+    /* ── CONTROLS ────────────────────────────── */
+    .controls {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 32px;
+      display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+    }
+    .ctrl-group { display: flex; align-items: center; gap: 7px; }
+    .ctrl-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.5px; color: var(--text-2);
+    }
+    input[type="date"] {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 12px; color: var(--text-1);
+      background: var(--bg);
+      outline: none;
+      cursor: pointer;
+    }
+    input[type="date"]:focus { border-color: var(--pf-red); }
+
+    .toggle {
+      display: flex; border: 1px solid var(--border);
+      border-radius: 7px; overflow: hidden; background: var(--bg);
+    }
+    .toggle-btn {
+      padding: 5px 13px; font-size: 12px; font-weight: 500;
+      border: none; background: transparent; cursor: pointer; color: var(--text-2);
+      transition: background 0.12s, color 0.12s;
+    }
+    .toggle-btn.active { background: var(--pf-red); color: #fff; }
+    .toggle-btn:hover:not(.active) { background: #ECEEF4; }
+
+    .shortcuts { display: flex; gap: 6px; margin-left: 2px; }
+    .shortcut-btn {
+      padding: 5px 10px; border: 1px solid var(--border); border-radius: 7px;
+      font-size: 11px; color: var(--text-2); background: var(--bg); cursor: pointer;
+      transition: all 0.12s;
+    }
+    .shortcut-btn:hover { border-color: var(--pf-red); color: var(--pf-red); background: #FFF5F0; }
+
+    .refresh-btn {
+      margin-left: auto;
+      padding: 6px 14px; border: none; border-radius: 7px;
+      background: var(--pf-red); color: #fff;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+      transition: background 0.12s;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .refresh-btn:hover { background: var(--pf-red-dk); }
+    .refresh-btn svg { width: 13px; height: 13px; }
+
+    /* ── MAIN ────────────────────────────────── */
+    .main { padding: 24px 32px; }
+
+    /* ── KPI CARDS ───────────────────────────── */
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+    .kpi-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+    }
+    .kpi-card-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.6px; color: var(--text-3); margin-bottom: 10px;
+    }
+    .kpi-card-value { font-size: 26px; font-weight: 800; color: var(--text-1); line-height: 1; }
+    .kpi-card-sub   { font-size: 12px; color: var(--text-2); margin-top: 6px; }
+    .kpi-dot {
+      display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; margin-right: 4px; vertical-align: middle;
+    }
+
+    /* ── CHART CARD ──────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+    .card-head {
+      padding: 16px 20px 12px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+    }
+    .card-title { font-size: 13px; font-weight: 700; color: var(--text-1); }
+    .card-body  { padding: 16px 20px; }
+
+    .vendor-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 16px; }
+    .vchip {
+      display: flex; align-items: center; gap: 5px;
+      padding: 4px 10px; border-radius: 20px; border: 1.5px solid;
+      font-size: 11px; font-weight: 600; cursor: pointer;
+      transition: opacity 0.12s;
+      user-select: none;
+    }
+    .vchip.active   { opacity: 1; }
+    .vchip.inactive { opacity: 0.28; }
+    .vchip-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+    .chart-wrap { position: relative; height: 360px; }
+
+    /* ── TABLE ───────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      padding: 10px 16px; text-align: left;
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.6px; color: var(--text-3);
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+    }
+    thead th.r { text-align: right; }
+    tbody td {
+      padding: 12px 16px;
+      font-size: 12px; color: var(--text-1);
+      border-bottom: 1px solid #F1F2F6;
+    }
+    tbody td.r { text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; }
+    tbody td.r.bold { color: var(--text-1); font-weight: 700; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: #FAFBFD; }
+    .total-row td { font-weight: 700; background: var(--bg) !important; }
+    .vendor-cell { display: flex; align-items: center; gap: 8px; }
+    .v-swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+    /* progress bar in table */
+    .bar-wrap { display: flex; align-items: center; gap: 8px; min-width: 100px; }
+    .bar-bg   { flex: 1; height: 5px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 3px; }
+    .bar-pct  { font-size: 11px; color: var(--text-2); min-width: 36px; text-align: right; }
+
+    /* ── LOADING / ERROR ─────────────────────── */
+    .loader {
+      display: flex; align-items: center; justify-content: center;
+      gap: 10px; height: 200px; color: var(--text-3); font-size: 13px;
+    }
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid var(--border); border-top-color: var(--pf-red);
+      border-radius: 50%; animation: spin 0.75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-box {
+      background: #FEF2F2; border: 1px solid #FECACA;
+      border-radius: 10px; padding: 16px 20px;
+      color: #B91C1C; font-size: 13px; line-height: 1.6;
+    }
+
+    /* ── FOOTER ──────────────────────────────── */
+    footer {
+      text-align: center; padding: 16px 32px;
+      font-size: 11px; color: var(--text-3);
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    /* ── RESPONSIVE ──────────────────────────── */
+    @media (max-width: 640px) {
+      .header, .controls, .main { padding-left: 16px; padding-right: 16px; }
+      .kpi-card-value { font-size: 20px; }
+      .chart-wrap { height: 260px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="header">
+  <div class="header-left">
+    <div class="pf-logo">PF</div>
+    <div>
+      <div class="header-title">Cost by Vendor</div>
+      <div class="header-sub">Growth Marketing · UAE</div>
+    </div>
+  </div>
+  <div class="fetch-badge" id="fetchBadge">Loading...</div>
+</header>
+
+<!-- CONTROLS -->
+<div class="controls">
+  <div class="ctrl-group">
+    <span class="ctrl-label">From</span>
+    <input type="date" id="startDate" />
+  </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">To</span>
+    <input type="date" id="endDate" />
+  </div>
+
+  <div class="shortcuts">
+    <button class="shortcut-btn" data-days="7">7D</button>
+    <button class="shortcut-btn" data-days="30">30D</button>
+    <button class="shortcut-btn" data-days="90">90D</button>
+    <button class="shortcut-btn" data-days="180">6M</button>
+    <button class="shortcut-btn" data-days="365">1Y</button>
+    <button class="shortcut-btn" data-days="0">All</button>
+  </div>
+
+  <div class="ctrl-group" style="margin-left: 8px;">
+    <span class="ctrl-label">View by</span>
+    <div class="toggle">
+      <button class="toggle-btn" data-gran="daily">Daily</button>
+      <button class="toggle-btn active" data-gran="weekly">Weekly</button>
+      <button class="toggle-btn" data-gran="monthly">Monthly</button>
+    </div>
+  </div>
+
+  <button class="refresh-btn" id="refreshBtn">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <path d="M13.5 2.5A6.5 6.5 0 1 1 2.5 8"/>
+      <polyline points="0,5 2.5,8 5,5"/>
+    </svg>
+    Refresh
+  </button>
+</div>
+
+<!-- MAIN -->
+<main class="main">
+  <!-- KPI row -->
+  <div class="kpi-row" id="kpiRow">
+    <div class="loader"><div class="spinner"></div> Fetching sheet data...</div>
+  </div>
+
+  <!-- Chart card -->
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Spend Over Time by Vendor</span>
+      <span style="font-size:11px;color:var(--text-3)" id="chartSubtitle"></span>
+    </div>
+    <div class="card-body">
+      <div class="vendor-chips" id="vendorChips"></div>
+      <div class="chart-wrap">
+        <canvas id="mainChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Table card -->
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Vendor Breakdown</span>
+      <span style="font-size:11px;color:var(--text-3)" id="tablePeriod"></span>
+    </div>
+    <div id="tableWrap"></div>
+  </div>
+</main>
+
+<footer>
+  Data source: Google Sheets via Supermetrics · Auto-refreshes on every page load ·
+  <a href="https://docs.google.com/spreadsheets/d/1svRcPjNERO32cVtZcBTdH-dVIfJ2CxNIpGqHSLBezNY/edit" target="_blank" style="color:var(--pf-red);text-decoration:none;">Open Sheet</a>
+</footer>
+
+<script>
+/* ─────────────────────────────────────────────────
+   CONFIG
+───────────────────────────────────────────────── */
+const SHEET_ID  = '1svRcPjNERO32cVtZcBTdH-dVIfJ2CxNIpGqHSLBezNY';
+const GID       = '448100535';
+const CSV_URL   = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${GID}`;
+const CSV_URL_B = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}`;
+
+// ── EMBEDDED DATA ─────────────────────────────────────────────────────────────
+// update-dashboard.py replaces this line daily with pre-fetched JSON rows.
+// When set, the dashboard opens instantly from file:// with no network needed.
+// DO NOT edit this line manually — it is overwritten by the updater script.
+const EMBEDDED_DATA = null; // UPDATER_PLACEHOLDER
+
+/* ─────────────────────────────────────────────────
+   VENDOR COLOUR MAP
+───────────────────────────────────────────────── */
+const KNOWN_COLORS = {
+  google:    '#4285F4',
+  meta:      '#1877F2',
+  facebook:  '#1877F2',
+  instagram: '#C13584',
+  tiktok:    '#2EC8A2',
+  'rtb house': '#FF6B35',
+  rtbhouse:  '#FF6B35',
+  criteo:    '#F76A2D',
+  criterio:  '#F76A2D',
+  snapchat:  '#FFCB00',
+  twitter:   '#1DA1F2',
+  x:         '#555555',
+  pinterest: '#E60023',
+  linkedin:  '#0A66C2',
+  youtube:   '#FF0000',
+  apple:     '#555555',
+  bing:      '#008272',
+  microsoft: '#00BCF2',
+};
+const PALETTE = [
+  '#4285F4','#EA4335','#34A853','#FBBC04','#9C27B0',
+  '#00BCD4','#FF5722','#607D8B','#795548','#009688',
+  '#E91E63','#3F51B5','#FF9800','#8BC34A','#673AB7',
+];
+
+/* ─────────────────────────────────────────────────
+   STATE
+───────────────────────────────────────────────── */
+let allRows    = [];
+let colorMap   = {};
+let activeVendors = new Set();
+let granularity   = 'weekly';
+let chartInst     = null;
+
+/* ─────────────────────────────────────────────────
+   UTILITY
+───────────────────────────────────────────────── */
+function parseDate(s) {
+  if (!s) return null;
+  let d = new Date(s);
+  if (!isNaN(d)) return d;
+  const p = String(s).split('/');
+  if (p.length === 3) {
+    d = new Date(`${p[2]}-${p[0].padStart(2,'0')}-${p[1].padStart(2,'0')}`);
+    if (!isNaN(d)) return d;
+  }
+  return null;
+}
+const fmtDate = d => d.toISOString().split('T')[0];
+const fmtUSD  = n => new Intl.NumberFormat('en-US', {
+  style: 'currency', currency: 'USD', maximumFractionDigits: 0
+}).format(n);
+
+function vendorColor(name, idx) {
+  const k = name.toLowerCase().trim();
+  for (const [kw, c] of Object.entries(KNOWN_COLORS)) {
+    if (k === kw || k.includes(kw)) return c;
+  }
+  return PALETTE[idx % PALETTE.length];
+}
+
+function getWeekKey(d) {
+  const tmp  = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dow  = tmp.getUTCDay() || 7;
+  tmp.setUTCDate(tmp.getUTCDate() + 4 - dow);
+  const y    = tmp.getUTCFullYear();
+  const jan1 = new Date(Date.UTC(y, 0, 1));
+  const w    = Math.ceil(((tmp - jan1) / 86400000 + 1) / 7);
+  return `${y}-W${String(w).padStart(2,'0')}`;
+}
+function weekLabel(key) {
+  const [yr, wd] = key.split('-W');
+  const jan1  = new Date(Date.UTC(+yr, 0, 1));
+  const dayOfJan1 = jan1.getUTCDay() || 7;
+  const weekStart = new Date(jan1);
+  weekStart.setUTCDate(jan1.getUTCDate() + (1 - dayOfJan1) + (+wd - 1) * 7);
+  return weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+function monthKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
+function monthLabel(key) {
+  const [y, m] = key.split('-');
+  return new Date(+y, +m-1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
+function dayLabel(k) {
+  return new Date(k).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+/* ─────────────────────────────────────────────────
+   LOAD SHEET
+   Priority 1: EMBEDDED_DATA baked in by the daily
+               updater script (works from file://)
+   Priority 2: Live fetch from Google Sheets
+               (works from GitHub Pages / local server)
+───────────────────────────────────────────────── */
+async function fetchCSV(url) {
+  const resp = await fetch(url, { cache: 'no-cache' });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const text = await resp.text();
+  if (text.trim().startsWith('<')) throw new Error('Got HTML — sheet may not be public');
+  return text;
+}
+
+async function loadSheet() {
+  // ── Path 1: embedded JSON (baked in by update-dashboard.py) ──
+  if (Array.isArray(EMBEDDED_DATA) && EMBEDDED_DATA.length > 0) {
+    console.log('Using embedded data:', EMBEDDED_DATA.length, 'rows');
+    return { data: EMBEDDED_DATA, meta: { fields: Object.keys(EMBEDDED_DATA[0]) } };
+  }
+
+  // ── Path 2: live fetch ──
+  console.log('No embedded data — attempting live fetch…');
+  const attempts = [
+    { label: 'gviz/tq',    url: CSV_URL },
+    { label: 'export CSV', url: CSV_URL_B },
+  ];
+  let lastErr;
+  for (const { label, url } of attempts) {
+    try {
+      const text = await fetchCSV(url);
+      console.log(`Loaded via: ${label}`);
+      return Papa.parse(text, { header: true, skipEmptyLines: true });
+    } catch (e) {
+      console.warn(`[${label}] failed:`, e.message);
+      lastErr = e;
+    }
+  }
+
+  throw new Error(
+    `Could not load sheet data (${lastErr?.message}).\n\n` +
+    'Check that the Google Sheet is set to "Anyone with the link can view" ' +
+    'under Share settings, then refresh this page.'
+  );
+}
+
+function parseSheet(results) {
+  const fields = results.meta.fields || [];
+  // Auto-detect columns (case-insensitive, handles "Day", "Date", "day", etc.)
+  let dayCol, vendorCol, costCol;
+  for (const f of fields) {
+    const n = f.toLowerCase().trim();
+    if (!dayCol    && (n === 'day' || n === 'date' || n.startsWith('day'))) dayCol = f;
+    if (!vendorCol && (n.includes('vendor') || n.includes('source') || n.includes('channel') || n === 'network')) vendorCol = f;
+    if (!costCol   && (n.includes('cost') || n.includes('spend') || n.includes('amount'))) costCol = f;
+  }
+  // Positional fallback if detection failed
+  if (!dayCol)    dayCol    = fields[0];
+  if (!vendorCol) vendorCol = fields[2];
+  if (!costCol)   costCol   = fields[3];
+
+  const rows = [];
+  for (const r of results.data) {
+    const d = parseDate(r[dayCol]);
+    if (!d) continue;
+    const vendor = String(r[vendorCol] || '').trim();
+    if (!vendor) continue;
+    const cost = parseFloat(String(r[costCol] || '0').replace(/[$,\s]/g,'')) || 0;
+    rows.push({ date: d, dateKey: fmtDate(d), vendor, cost });
+  }
+  return rows;
+}
+
+/* ─────────────────────────────────────────────────
+   AGGREGATE
+───────────────────────────────────────────────── */
+function aggregate(rows, start, end, gran, vendors) {
+  const s = new Date(start), e = new Date(end);
+  e.setHours(23,59,59);
+  const filtered = rows.filter(r =>
+    r.date >= s && r.date <= e && vendors.has(r.vendor)
+  );
+
+  const buckets = {}; // periodKey -> { vendor: cost }
+  const order   = [];
+
+  for (const r of filtered) {
+    const key = gran === 'daily'   ? r.dateKey
+              : gran === 'weekly'  ? getWeekKey(r.date)
+              : monthKey(r.date);
+    if (!buckets[key]) { buckets[key] = {}; order.push(key); }
+    buckets[key][r.vendor] = (buckets[key][r.vendor] || 0) + r.cost;
+  }
+  order.sort();
+
+  const labels = order.map(k =>
+    gran === 'daily'  ? dayLabel(k)
+  : gran === 'weekly' ? weekLabel(k)
+  : monthLabel(k)
+  );
+
+  return { buckets, order, labels };
+}
+
+/* ─────────────────────────────────────────────────
+   RENDER KPIs
+───────────────────────────────────────────────── */
+function renderKPIs() {
+  const start = new Date(document.getElementById('startDate').value);
+  const end   = new Date(document.getElementById('endDate').value);
+  end.setHours(23,59,59);
+
+  const rows = allRows.filter(r =>
+    r.date >= start && r.date <= end && activeVendors.has(r.vendor)
+  );
+
+  const total   = rows.reduce((s,r) => s + r.cost, 0);
+  const byV     = {};
+  const daySet  = new Set();
+  for (const r of rows) {
+    byV[r.vendor] = (byV[r.vendor] || 0) + r.cost;
+    daySet.add(r.dateKey);
+  }
+  const sorted  = Object.entries(byV).sort((a,b) => b[1]-a[1]);
+  const top     = sorted[0];
+  const avgDay  = daySet.size ? total / daySet.size : 0;
+
+  const dots = sorted.map(([v]) =>
+    `<span class="kpi-dot" style="background:${colorMap[v]}"></span>${v}`
+  ).join(' &nbsp;');
+
+  document.getElementById('kpiRow').innerHTML = `
+    <div class="kpi-card">
+      <div class="kpi-card-label">Total Spend</div>
+      <div class="kpi-card-value">${fmtUSD(total)}</div>
+      <div class="kpi-card-sub">${daySet.size} days · ${sorted.length} vendors</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card-label">Top Vendor</div>
+      <div class="kpi-card-value" style="font-size:20px;line-height:1.2">${top ? top[0] : '—'}</div>
+      <div class="kpi-card-sub">
+        ${top ? fmtUSD(top[1]) : ''}&nbsp;
+        <span style="color:var(--pf-red);font-weight:700">
+          ${top && total > 0 ? (top[1]/total*100).toFixed(0)+'%' : ''}
+        </span>
+        of total
+      </div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card-label">Avg Daily Spend</div>
+      <div class="kpi-card-value">${fmtUSD(avgDay)}</div>
+      <div class="kpi-card-sub">across all active vendors</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card-label">Vendor Split</div>
+      <div class="kpi-card-sub" style="font-size:12px;line-height:2">${dots}</div>
+    </div>
+  `;
+}
+
+/* ─────────────────────────────────────────────────
+   RENDER CHART
+───────────────────────────────────────────────── */
+function renderChart() {
+  const { buckets, order, labels } = aggregate(
+    allRows,
+    document.getElementById('startDate').value,
+    document.getElementById('endDate').value,
+    granularity,
+    activeVendors
+  );
+
+  const vendors  = [...activeVendors];
+  const datasets = vendors.map(v => ({
+    label:           v,
+    data:            order.map(p => buckets[p]?.[v] || 0),
+    backgroundColor: colorMap[v] + 'CC',
+    borderColor:     colorMap[v],
+    borderWidth:     1,
+    borderRadius:    3,
+    borderSkipped:   false,
+  }));
+
+  const ctx = document.getElementById('mainChart').getContext('2d');
+  if (chartInst) chartInst.destroy();
+
+  chartInst = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive:          true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label:  c => `  ${c.dataset.label}: ${fmtUSD(c.raw)}`,
+            footer: items => `  Total: ${fmtUSD(items.reduce((s,i) => s + i.raw, 0))}`,
+          },
+          padding: 12,
+          cornerRadius: 8,
+        },
+      },
+      scales: {
+        x: {
+          stacked: true,
+          grid:    { display: false },
+          ticks:   { font: { size: 11 }, maxRotation: 45 },
+        },
+        y: {
+          stacked: true,
+          grid:    { color: '#F1F2F6' },
+          ticks:   { font: { size: 11 }, callback: v => fmtUSD(v) },
+          border:  { display: false },
+        },
+      },
+    },
+  });
+
+  document.getElementById('chartSubtitle').textContent =
+    `${labels.length} ${granularity === 'daily' ? 'days' : granularity === 'weekly' ? 'weeks' : 'months'}`;
+}
+
+/* ─────────────────────────────────────────────────
+   RENDER TABLE
+───────────────────────────────────────────────── */
+function renderTable() {
+  const start = new Date(document.getElementById('startDate').value);
+  const end   = new Date(document.getElementById('endDate').value);
+  end.setHours(23,59,59);
+
+  const rows = allRows.filter(r =>
+    r.date >= start && r.date <= end && activeVendors.has(r.vendor)
+  );
+
+  const byV = {};
+  for (const r of rows) {
+    if (!byV[r.vendor]) byV[r.vendor] = { total: 0, days: new Set() };
+    byV[r.vendor].total += r.cost;
+    byV[r.vendor].days.add(r.dateKey);
+  }
+  const total   = Object.values(byV).reduce((s,v) => s + v.total, 0);
+  const entries = Object.entries(byV).sort((a,b) => b[1].total - a[1].total);
+
+  const rows_html = entries.map(([vendor, d]) => {
+    const pct = total > 0 ? d.total / total * 100 : 0;
+    const avg = d.days.size > 0 ? d.total / d.days.size : 0;
+    return `
+      <tr>
+        <td>
+          <div class="vendor-cell">
+            <span class="v-swatch" style="background:${colorMap[vendor]}"></span>
+            <span>${vendor}</span>
+          </div>
+        </td>
+        <td class="r bold">${fmtUSD(d.total)}</td>
+        <td class="r">
+          <div class="bar-wrap">
+            <div class="bar-bg"><div class="bar-fill" style="width:${pct.toFixed(1)}%;background:${colorMap[vendor]}"></div></div>
+            <span class="bar-pct">${pct.toFixed(1)}%</span>
+          </div>
+        </td>
+        <td class="r">${fmtUSD(avg)}</td>
+        <td class="r">${d.days.size}</td>
+      </tr>`;
+  }).join('');
+
+  document.getElementById('tableWrap').innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Vendor</th>
+          <th class="r">Total Spend</th>
+          <th class="r">Share</th>
+          <th class="r">Avg Daily</th>
+          <th class="r">Active Days</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows_html}
+        <tr class="total-row">
+          <td>All Vendors</td>
+          <td class="r bold">${fmtUSD(total)}</td>
+          <td class="r">100%</td>
+          <td class="r">—</td>
+          <td class="r">—</td>
+        </tr>
+      </tbody>
+    </table>`;
+
+  document.getElementById('tablePeriod').textContent =
+    `${start.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})} — ` +
+    `${end.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`;
+}
+
+/* ─────────────────────────────────────────────────
+   VENDOR CHIPS
+───────────────────────────────────────────────── */
+function renderChips(vendors) {
+  const el = document.getElementById('vendorChips');
+  el.innerHTML = vendors.map(v => `
+    <div class="vchip active" data-v="${v}"
+         style="border-color:${colorMap[v]};color:${colorMap[v]}">
+      <span class="vchip-dot" style="background:${colorMap[v]}"></span>
+      ${v}
+    </div>`).join('');
+
+  el.querySelectorAll('.vchip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const v = chip.dataset.v;
+      if (activeVendors.has(v)) {
+        if (activeVendors.size === 1) return;
+        activeVendors.delete(v);
+        chip.classList.replace('active','inactive');
+      } else {
+        activeVendors.add(v);
+        chip.classList.replace('inactive','active');
+      }
+      renderAll();
+    });
+  });
+}
+
+/* ─────────────────────────────────────────────────
+   RENDER ALL
+───────────────────────────────────────────────── */
+function renderAll() {
+  if (!allRows.length) return;
+  renderKPIs();
+  renderChart();
+  renderTable();
+}
+
+/* ─────────────────────────────────────────────────
+   DATE SHORTCUTS
+───────────────────────────────────────────────── */
+function applyShortcut(days) {
+  const dates = allRows.map(r => r.date);
+  const maxD  = new Date(Math.max(...dates));
+  let   minD;
+  if (days === 0) {
+    minD = new Date(Math.min(...dates));
+  } else {
+    minD = new Date(maxD);
+    minD.setDate(minD.getDate() - (days - 1));
+  }
+  document.getElementById('startDate').value = fmtDate(minD);
+  document.getElementById('endDate').value   = fmtDate(maxD);
+  renderAll();
+}
+
+/* ─────────────────────────────────────────────────
+   INIT
+───────────────────────────────────────────────── */
+async function init() {
+  document.getElementById('fetchBadge').textContent = 'Loading...';
+  document.getElementById('kpiRow').innerHTML =
+    '<div class="loader"><div class="spinner"></div> Fetching sheet data…</div>';
+  document.getElementById('vendorChips').innerHTML = '';
+  document.getElementById('tableWrap').innerHTML   = '';
+  if (chartInst) { chartInst.destroy(); chartInst = null; }
+
+  try {
+    const results = await loadSheet();
+    allRows = parseSheet(results);
+
+    if (!allRows.length) {
+      document.getElementById('kpiRow').innerHTML = `
+        <div class="error-box">
+          No data found. Ensure the sheet is set to <strong>"Anyone with the link can view"</strong>
+          in Google Sheets → Share settings.
+        </div>`;
+      return;
+    }
+
+    // Build vendor list + color map
+    const vendors = [...new Set(allRows.map(r => r.vendor))].sort();
+    colorMap      = {};
+    activeVendors = new Set(vendors);
+    vendors.forEach((v, i) => { colorMap[v] = vendorColor(v, i); });
+
+    // Default date range: last 90 days (or full range if shorter)
+    const dates   = allRows.map(r => r.date);
+    const maxDate = new Date(Math.max(...dates));
+    const minDate = new Date(Math.min(...dates));
+    const d90     = new Date(maxDate); d90.setDate(d90.getDate() - 89);
+    document.getElementById('startDate').value = fmtDate(d90 > minDate ? d90 : minDate);
+    document.getElementById('endDate').value   = fmtDate(maxDate);
+
+    renderChips(vendors);
+    renderAll();
+
+    document.getElementById('fetchBadge').textContent =
+      `Updated ${new Date().toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}`;
+
+  } catch (err) {
+    console.error(err);
+    document.getElementById('kpiRow').innerHTML = `
+      <div class="error-box">
+        <strong>Failed to load data.</strong><br/>
+        ${err.message || err}<br/><br/>
+        Make sure the sheet is set to <strong>"Anyone with the link can view"</strong>
+        and open this file in a browser (not as a local file:// URL — use a local server or GitHub Pages).
+      </div>`;
+    document.getElementById('fetchBadge').textContent = 'Error';
+  }
+}
+
+/* ─────────────────────────────────────────────────
+   EVENT LISTENERS
+───────────────────────────────────────────────── */
+document.getElementById('startDate').addEventListener('change', renderAll);
+document.getElementById('endDate').addEventListener('change', renderAll);
+
+document.querySelectorAll('.toggle-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    granularity = btn.dataset.gran;
+    renderAll();
+  });
+});
+
+document.querySelectorAll('.shortcut-btn').forEach(btn => {
+  btn.addEventListener('click', () => applyShortcut(+btn.dataset.days));
+});
+
+document.getElementById('refreshBtn').addEventListener('click', () => {
+  allRows = []; activeVendors = new Set(); colorMap = {};
+  init();
+});
+
+// Start
+init();
+</script>
+</body>
+</html>
