@@ -262,6 +262,16 @@
       line-height: 2.2; display: none;
     }
     .ci-all-cols.open { display: block; }
+    .ci-tab-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 600;
+      border: 1px solid;
+    }
+    .ci-tab-chip.ok   { color: #059669; border-color: #6EE7B7; background: #ECFDF5; }
+    .ci-tab-chip.fail { color: #B91C1C; border-color: #FECACA; background: #FEF2F2; }
+    .ci-tab-chip-dot  { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+    .ci-tab-chip.ok   .ci-tab-chip-dot { background: #059669; }
+    .ci-tab-chip.fail .ci-tab-chip-dot { background: #B91C1C; }
 
     /* ── RESPONSIVE ──────────────────────────── */
     @media (max-width: 640px) {
@@ -392,6 +402,22 @@ const VENDOR_ALIASES = {
   'meta install':   'Meta',
 };
 
+// ── VENDOR TABS ────────────────────────────────────────────────────────────
+// One entry per vendor sheet tab. The dashboard fetches all tabs in parallel.
+// sheetName must match exactly (case-sensitive) the tab name in Google Sheets.
+// Multiple entries with the same vendor name are merged automatically (e.g. Meta).
+const VENDOR_TABS = [
+  { vendor: 'Google Ads',       sheetName: 'Google cost' },
+  { vendor: 'Meta',             sheetName: 'Facebook cost' },
+  { vendor: 'Meta',             sheetName: 'Meta Installs' },
+  { vendor: 'RTB House',        sheetName: 'RTB house cost' },
+  { vendor: 'Criteo',           sheetName: 'Criteo cost' },
+  { vendor: 'Apple Search Ads', sheetName: 'Apple ads' },
+  { vendor: 'TikTok',           sheetName: 'TikTok cost' },
+  { vendor: 'Snapchat',         sheetName: 'Snapchat cost' },
+  { vendor: 'Reddit',           sheetName: 'Reddit cost' },
+];
+
 // ── EMBEDDED DATA ─────────────────────────────────────────────────────────────
 // update-dashboard.py replaces this line daily with pre-fetched JSON rows.
 // When set, the dashboard opens instantly from file:// with no network needed.
@@ -435,7 +461,8 @@ let colorMap   = {};
 let activeVendors = new Set();
 let granularity   = 'weekly';
 let chartInst     = null;
-let lastColInfo   = null;   // populated by parseSheet — drives column inspector UI
+let lastColInfo   = null;   // populated by parseSheet (fallback) — drives column inspector UI
+let lastTabStatus = null;   // populated by loadMultiTab — drives tab-status inspector UI
 
 /* ─────────────────────────────────────────────────
    UTILITY
@@ -631,6 +658,87 @@ async function loadSheet() {
     'Check that the Google Sheet is set to "Anyone with the link can view" ' +
     'under Share settings, then refresh this page.'
   );
+}
+
+/* ── parseVendorTab ───────────────────────────────────────────────────────────
+   Extract { date, dateKey, vendor, cost } rows from a single-vendor tab.
+   The vendor name comes from the VENDOR_TABS config — not from the sheet data.
+   Tab layout: at least a date column + a cost column (other columns ignored).
+──────────────────────────────────────────────────────────────────────────── */
+function parseVendorTab(raw, vendorName) {
+  if (!raw || raw.length < 2) return [];
+
+  // Find the header row (first row within the top 5 that has date or cost keywords)
+  let hdrIdx = -1;
+  for (let i = 0; i < Math.min(raw.length, 5); i++) {
+    const lower = raw[i].map(c => String(c).toLowerCase().trim());
+    const hasDate = lower.some(n => n === 'date' || n === 'day' || n.startsWith('day'));
+    const hasCost = lower.some(n => n.includes('cost') || n.includes('spend') || n.includes('amount'));
+    if (hasDate || hasCost) { hdrIdx = i; break; }
+  }
+  if (hdrIdx === -1) hdrIdx = 0; // fallback: treat row 0 as header
+
+  const rawHeader = raw[hdrIdx].map(c => String(c).replace(/^\uFEFF/, '').trim());
+  const header    = rawHeader.map(c => c.toLowerCase());
+
+  const dI = findColIdx(header, rawHeader, DATE_COL,
+    n => n === 'date', n => n === 'day', n => n.startsWith('day'));
+  const mI = findColIdx(header, rawHeader, null,
+    n => n === 'month', n => n.includes('month'));
+  const cI = findColIdx(header, rawHeader, COST_COL,
+    n => n.includes('cost') || n.includes('spend') || n.includes('amount'));
+
+  const dateIdx  = dI !== -1 ? dI : 0;
+  const monthIdx = mI;
+  const costIdx  = cI !== -1 ? cI : (dateIdx === 0 ? 1 : 0);
+
+  console.log(`[${vendorName}] columns → date:"${rawHeader[dateIdx]}" cost:"${rawHeader[costIdx]}"`);
+
+  const rows = [];
+  for (let r = hdrIdx + 1; r < raw.length; r++) {
+    const row = raw[r];
+    let d = parseDate(String(row[dateIdx] || '').trim());
+    if (!d || d.getFullYear() < 2010 || d.getFullYear() > 2040) {
+      const dayNum = parseInt(String(row[dateIdx] || '1'), 10);
+      const mStr   = monthIdx !== -1 ? String(row[monthIdx] || '') : null;
+      d = dateFromMonthAndDay(mStr, dayNum);
+    }
+    if (!d || d.getFullYear() < 2010 || d.getFullYear() > 2040) continue;
+    const cost = parseFloat(String(row[costIdx] || '0').replace(/[$,\s]/g, '')) || 0;
+    rows.push({ date: d, dateKey: fmtDate(d), vendor: vendorName, cost });
+  }
+  return rows;
+}
+
+/* ── loadMultiTab ─────────────────────────────────────────────────────────────
+   Fetch all VENDOR_TABS in parallel. Returns combined rows + per-tab status.
+──────────────────────────────────────────────────────────────────────────── */
+async function loadMultiTab() {
+  const settled = await Promise.allSettled(
+    VENDOR_TABS.map(async tab => {
+      const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tab.sheetName)}`;
+      const text = await fetchCSV(url);
+      const raw  = Papa.parse(text, { skipEmptyLines: false }).data;
+      const rows = parseVendorTab(raw, tab.vendor);
+      return { tab, rows };
+    })
+  );
+
+  const combined  = [];
+  const tabStatus = [];
+  for (let i = 0; i < settled.length; i++) {
+    const r   = settled[i];
+    const tab = VENDOR_TABS[i];
+    if (r.status === 'fulfilled') {
+      combined.push(...r.value.rows);
+      tabStatus.push({ vendor: tab.vendor, sheet: tab.sheetName, rows: r.value.rows.length, ok: true });
+      console.log(`✓ [${tab.vendor}] "${tab.sheetName}": ${r.value.rows.length} rows`);
+    } else {
+      tabStatus.push({ vendor: tab.vendor, sheet: tab.sheetName, rows: 0, ok: false, err: r.reason?.message });
+      console.warn(`✗ [${tab.vendor}] "${tab.sheetName}" failed:`, r.reason?.message);
+    }
+  }
+  return { combined, tabStatus };
 }
 
 /* ── parseSheet ──────────────────────────────────────────────────────────────
@@ -1110,61 +1218,110 @@ function applyShortcut(days) {
    INIT
 ───────────────────────────────────────────────── */
 async function init() {
-  lastColInfo = null;
+  lastColInfo   = null;
+  lastTabStatus = null;
   document.getElementById('colInspector').classList.remove('visible');
   document.getElementById('fetchBadge').textContent = 'Loading...';
   document.getElementById('kpiRow').innerHTML =
-    '<div class="loader"><div class="spinner"></div> Fetching sheet data…</div>';
+    '<div class="loader"><div class="spinner"></div> Fetching vendor tabs…</div>';
   document.getElementById('vendorChips').innerHTML = '';
   document.getElementById('tableWrap').innerHTML   = '';
   if (chartInst) { chartInst.destroy(); chartInst = null; }
 
   try {
-    const results = await loadSheet();
-    allRows = parseSheet(results);
+    // ── Step 1: try multi-tab fetch (one tab per vendor) ────────────────────
+    let rows = [];
+    let tabStatus = null;
+
+    try {
+      const mt = await loadMultiTab();
+      rows      = mt.combined;
+      tabStatus = mt.tabStatus;
+    } catch (e) {
+      console.warn('Multi-tab load error:', e.message);
+    }
+
+    // ── Step 2: fallback to "All cost" tab if multi-tab returned nothing ────
+    if (!rows.length) {
+      console.log('Multi-tab returned 0 rows — falling back to "All cost" tab');
+      document.getElementById('kpiRow').innerHTML =
+        '<div class="loader"><div class="spinner"></div> Vendor tabs unavailable, loading All cost tab…</div>';
+      const results = await loadSheet();
+      rows = parseSheet(results);
+    }
+
+    allRows = rows;
 
     if (!allRows.length) {
-      const rawCount = results?.data?.length ?? 0;
-      // Show first 4 rows of raw array (tells us the exact sheet layout)
-      const preview  = (results?.data ?? []).slice(0, 4);
-      const debugJson = JSON.stringify({ rawRowCount: rawCount, first4Rows: preview }, null, 2);
       document.getElementById('kpiRow').innerHTML = `
         <div class="error-box">
-          <strong>No data parsed.</strong> Sheet fetched (${rawCount} raw rows) but no valid rows found.<br><br>
-          Ensure the sheet is set to <strong>"Anyone with the link can view"</strong>.<br><br>
-          <details>
-            <summary style="cursor:pointer;font-weight:600;color:#b84c1c">▶ Click to see raw data (share this to get help)</summary>
-            <pre style="margin-top:8px;padding:10px;background:#fff3f0;border:1px solid #f4c0a8;border-radius:6px;font-size:11px;text-align:left;overflow:auto;white-space:pre-wrap">${debugJson.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
-          </details>
+          <strong>No data found.</strong> All vendor tabs loaded but returned zero rows.<br><br>
+          Check that the Google Sheet is set to <strong>"Anyone with the link can view"</strong>
+          and that the tab names in VENDOR_TABS match exactly.
         </div>`;
       return;
     }
 
-    // Build vendor list + color map
+    // ── Step 3: build vendor list + color map ───────────────────────────────
     const vendors = [...new Set(allRows.map(r => r.vendor))].sort();
     colorMap      = {};
     activeVendors = new Set(vendors);
     vendors.forEach((v, i) => { colorMap[v] = vendorColor(v, i); });
 
-    // Default date range: last 90 days (or full range if shorter)
-    const dates   = allRows.map(r => r.date);
-    const maxDate = new Date(Math.max(...dates));
-    const minDate = new Date(Math.min(...dates));
-    const d90     = new Date(maxDate); d90.setDate(d90.getDate() - 89);
-    document.getElementById('startDate').value = fmtDate(d90 > minDate ? d90 : minDate);
-    document.getElementById('endDate').value   = fmtDate(maxDate);
+    // ── Step 4: default date range = current month (1st → yesterday) ────────
+    const dates    = allRows.map(r => r.date);
+    const maxDate  = new Date(Math.max(...dates));
+    const minDate  = new Date(Math.min(...dates));
+    const today    = new Date();
+    const yesterday = new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate() - 1));
+    const monthStart = new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1));
+
+    // Check if any rows fall in the current month up to yesterday
+    const hasCurrentMonth = allRows.some(r => r.date >= monthStart && r.date <= yesterday);
+    let defStart, defEnd;
+    if (hasCurrentMonth) {
+      defStart = monthStart;
+      defEnd   = yesterday <= maxDate ? yesterday : maxDate;
+    } else {
+      // Fallback: last 30 days of available data
+      defEnd   = maxDate;
+      defStart = new Date(maxDate); defStart.setDate(defStart.getDate() - 29);
+      if (defStart < minDate) defStart = minDate;
+    }
+    document.getElementById('startDate').value = fmtDate(defStart);
+    document.getElementById('endDate').value   = fmtDate(defEnd);
 
     renderChips(vendors);
     renderAll();
 
-    // ── Column inspector bar ────────────────────────────────────────────────
-    if (lastColInfo) {
-      const ci = document.getElementById('colInspector');
+    // ── Step 5: inspector bar ───────────────────────────────────────────────
+    const ci = document.getElementById('colInspector');
+    if (tabStatus) {
+      // Multi-tab mode: show per-vendor load status
+      lastTabStatus = tabStatus;
+      const chips = tabStatus.map(t => {
+        const cls = t.ok ? 'ok' : 'fail';
+        const lbl = t.ok ? `${t.vendor} (${t.rows.toLocaleString()})` : `${t.vendor} ✗`;
+        return `<span class="ci-tab-chip ${cls}" title="${t.sheet}${t.err ? ' — ' + t.err : ''}">
+                  <span class="ci-tab-chip-dot"></span>${lbl}
+                </span>`;
+      }).join(' ');
+      const loaded = tabStatus.filter(t => t.ok).length;
+      const total  = tabStatus.length;
+      ci.innerHTML = `
+        <span class="ci-label">Tabs</span>
+        <span style="color:var(--text-2)">${loaded}/${total} loaded &nbsp;·&nbsp; ${allRows.length.toLocaleString()} rows</span>
+        <span class="ci-sep">&nbsp;·&nbsp;</span>
+        ${chips}
+      `;
+      ci.classList.add('visible');
+    } else if (lastColInfo) {
+      // Fallback mode: show column detection info
       const allColsHtml = lastColInfo.allCols
         .map((c, i) => `<span class="ci-val" title="index ${i}">${(c || '(empty)').replace(/</g,'&lt;')}</span>`)
         .join(' ');
       ci.innerHTML = `
-        <span class="ci-label">Using</span>
+        <span class="ci-label">Fallback mode</span>
         <span class="ci-val" title="date column">Date: ${lastColInfo.date}</span>
         <span class="ci-sep">&nbsp;·&nbsp;</span>
         <span class="ci-val" title="vendor column">Vendor: ${lastColInfo.vendor}</span>
