@@ -224,6 +224,45 @@
       background: var(--surface);
     }
 
+    /* ── COLUMN INSPECTOR ────────────────────────── */
+    .col-inspector {
+      padding: 5px 32px;
+      font-size: 11px;
+      color: var(--text-2);
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      display: none;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .col-inspector.visible { display: flex; }
+    .ci-label { font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.4px; }
+    .ci-val {
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: var(--text-1);
+      font-size: 10px;
+    }
+    .ci-sep { color: var(--border); }
+    .ci-toggle {
+      margin-left: auto; font-size: 10px; color: var(--pf-red);
+      cursor: pointer; text-decoration: underline;
+      background: none; border: none; padding: 0;
+    }
+    .ci-all-cols {
+      width: 100%; margin-top: 4px;
+      font-size: 10px; color: var(--text-2);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 10px;
+      line-height: 2.2; display: none;
+    }
+    .ci-all-cols.open { display: block; }
+
     /* ── RESPONSIVE ──────────────────────────── */
     @media (max-width: 640px) {
       .header, .controls, .main { padding-left: 16px; padding-right: 16px; }
@@ -284,6 +323,9 @@
   </button>
 </div>
 
+<!-- COLUMN INSPECTOR (populated after data loads) -->
+<div class="col-inspector" id="colInspector"></div>
+
 <!-- MAIN -->
 <main class="main">
   <!-- KPI row -->
@@ -329,6 +371,27 @@ const GID       = '1888284710';
 const CSV_URL   = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${GID}`;
 const CSV_URL_B = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}`;
 
+// ── COLUMN OVERRIDES ───────────────────────────────────────────────────────────
+// If auto-detection picks the wrong column, set the exact header name here.
+// Leave as null to use auto-detection.
+// Example: const VENDOR_COL = 'Channel Level 2';
+const VENDOR_COL = null;   // exact column name for the vendor/platform breakdown
+const DATE_COL   = null;   // exact column name for the date
+const COST_COL   = null;   // exact column name for the cost in USD
+
+// ── VENDOR ALIASES ─────────────────────────────────────────────────────────────
+// Map raw channel values → canonical vendor names in the dashboard.
+// Matched case-sensitively first, then case-insensitively.
+// Add entries here to merge channels that belong to the same vendor.
+const VENDOR_ALIASES = {
+  'Facebook Cost':  'Meta',
+  'facebook cost':  'Meta',
+  'Meta Installs':  'Meta',
+  'meta installs':  'Meta',
+  'Meta Install':   'Meta',
+  'meta install':   'Meta',
+};
+
 // ── EMBEDDED DATA ─────────────────────────────────────────────────────────────
 // update-dashboard.py replaces this line daily with pre-fetched JSON rows.
 // When set, the dashboard opens instantly from file:// with no network needed.
@@ -372,6 +435,7 @@ let colorMap   = {};
 let activeVendors = new Set();
 let granularity   = 'weekly';
 let chartInst     = null;
+let lastColInfo   = null;   // populated by parseSheet — drives column inspector UI
 
 /* ─────────────────────────────────────────────────
    UTILITY
@@ -499,6 +563,24 @@ function monthLabel(key) {
 }
 function dayLabel(k) {
   return new Date(k).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+/* Find a column index by optional override name, then by ordered matcher fns.
+   header    = lowercase trimmed header array
+   rawHeader = original-case header array (for override matching)
+   override  = exact column name string (case-insensitive) or null
+   matchers  = functions (name: string) => boolean, tried in order */
+function findColIdx(header, rawHeader, override, ...matchers) {
+  if (override) {
+    const ov = override.toLowerCase().trim();
+    const i  = rawHeader.findIndex(c => c.toLowerCase().trim() === ov);
+    if (i !== -1) return i;
+  }
+  for (const test of matchers) {
+    const i = header.findIndex(test);
+    if (i !== -1) return i;
+  }
+  return -1;
 }
 
 /* ─────────────────────────────────────────────────
@@ -642,36 +724,67 @@ function parseSheet(result) {
 
   // ── Attempt LONG format ───────────────────────────────────────────────────
   if (longHeaderIdx !== -1) {
-    const header = raw[longHeaderIdx].map(c => String(c).replace(/^\uFEFF/, '').toLowerCase().trim());
-    const dayIdx    = header.findIndex(n => n === 'day' || n === 'date' || n.startsWith('day'));
-    const monthIdx  = header.findIndex(n => n === 'month' || n.includes('month'));
-    // Prioritise exact names (platform, vendor, network) before partial matches
-    const vendorIdx = (() => {
-      let i = header.findIndex(n => n === 'platform' || n === 'vendor' || n === 'network' || n === 'source');
-      if (i !== -1) return i;
-      i = header.findIndex(n => n.includes('platform') || n.includes('vendor') || n.includes('source'));
-      if (i !== -1) return i;
-      return header.findIndex(n => n.includes('channel')); // last resort
-    })();
-    const costIdx   = header.findIndex(n => n.includes('cost') || n.includes('spend') || n.includes('amount'));
+    const rawHeader = raw[longHeaderIdx].map(c => String(c).replace(/^\uFEFF/, '').trim());
+    const header    = rawHeader.map(c => c.toLowerCase());
 
-    const dI = dayIdx    !== -1 ? dayIdx    : 0;
-    const vI = vendorIdx !== -1 ? vendorIdx : 2;
-    const cI = costIdx   !== -1 ? costIdx   : 3;
+    // Resolve each column: explicit override wins, then matchers in priority order
+    const dI = findColIdx(header, rawHeader, DATE_COL,
+      n => n === 'date',
+      n => n === 'day',
+      n => n.startsWith('day')
+    );
+    const mI = findColIdx(header, rawHeader, null,
+      n => n === 'month',
+      n => n.includes('month')
+    );
+    // Vendor priority: Channel L3 > Channel L2 > vendor/network > platform > any channel
+    const vI = findColIdx(header, rawHeader, VENDOR_COL,
+      n => n.includes('channel') && n.includes('3'),
+      n => n.includes('channel') && n.includes('2'),
+      n => n === 'vendor' || n === 'network' || n === 'source',
+      n => n.includes('vendor') || n.includes('network') || n.includes('source'),
+      n => n === 'platform' || n.includes('platform'),
+      n => n.includes('channel')
+    );
+    const cI = findColIdx(header, rawHeader, COST_COL,
+      n => n.includes('cost') || n.includes('spend') || n.includes('amount')
+    );
+
+    const dateIdx   = dI !== -1 ? dI : 0;
+    const monthIdx  = mI;
+    const vendorIdx = vI !== -1 ? vI : 2;
+    const costIdx   = cI !== -1 ? cI : 3;
+
+    console.log('Long-format columns →', {
+      date:   rawHeader[dateIdx],
+      vendor: rawHeader[vendorIdx],
+      cost:   rawHeader[costIdx],
+      month:  monthIdx !== -1 ? rawHeader[monthIdx] : '(none)',
+    });
+
+    // Populate column inspector data
+    lastColInfo = {
+      date:    rawHeader[dateIdx]   || `col[${dateIdx}]`,
+      vendor:  rawHeader[vendorIdx] || `col[${vendorIdx}]`,
+      cost:    rawHeader[costIdx]   || `col[${costIdx}]`,
+      allCols: rawHeader,
+    };
 
     const rows = [];
     for (let r = longHeaderIdx + 1; r < raw.length; r++) {
       const row = raw[r];
-      let d = parseDate(String(row[dI] || '').trim());
+      let d = parseDate(String(row[dateIdx] || '').trim());
       if (!d || d.getFullYear() < 2010 || d.getFullYear() > 2040) {
-        const dayNum = parseInt(String(row[dI] || '1'), 10);
+        const dayNum = parseInt(String(row[dateIdx] || '1'), 10);
         const mStr   = monthIdx !== -1 ? String(row[monthIdx] || '') : null;
         d = dateFromMonthAndDay(mStr, dayNum);
       }
       if (!d || d.getFullYear() < 2010 || d.getFullYear() > 2040) continue;
-      const vendor = String(row[vI] || '').trim();
-      if (!vendor) continue;
-      const cost = parseFloat(String(row[cI] || '0').replace(/[$,\s]/g, '')) || 0;
+      const rawVendor = String(row[vendorIdx] || '').trim();
+      if (!rawVendor) continue;
+      // Apply aliases (e.g. 'Facebook Cost' → 'Meta')
+      const vendor = VENDOR_ALIASES[rawVendor] ?? VENDOR_ALIASES[rawVendor.toLowerCase()] ?? rawVendor;
+      const cost = parseFloat(String(row[costIdx] || '0').replace(/[$,\s]/g, '')) || 0;
       rows.push({ date: d, dateKey: fmtDate(d), vendor, cost });
     }
 
@@ -997,6 +1110,8 @@ function applyShortcut(days) {
    INIT
 ───────────────────────────────────────────────── */
 async function init() {
+  lastColInfo = null;
+  document.getElementById('colInspector').classList.remove('visible');
   document.getElementById('fetchBadge').textContent = 'Loading...';
   document.getElementById('kpiRow').innerHTML =
     '<div class="loader"><div class="spinner"></div> Fetching sheet data…</div>';
@@ -1041,6 +1156,33 @@ async function init() {
 
     renderChips(vendors);
     renderAll();
+
+    // ── Column inspector bar ────────────────────────────────────────────────
+    if (lastColInfo) {
+      const ci = document.getElementById('colInspector');
+      const allColsHtml = lastColInfo.allCols
+        .map((c, i) => `<span class="ci-val" title="index ${i}">${(c || '(empty)').replace(/</g,'&lt;')}</span>`)
+        .join(' ');
+      ci.innerHTML = `
+        <span class="ci-label">Using</span>
+        <span class="ci-val" title="date column">Date: ${lastColInfo.date}</span>
+        <span class="ci-sep">&nbsp;·&nbsp;</span>
+        <span class="ci-val" title="vendor column">Vendor: ${lastColInfo.vendor}</span>
+        <span class="ci-sep">&nbsp;·&nbsp;</span>
+        <span class="ci-val" title="cost column">Cost: ${lastColInfo.cost}</span>
+        <span class="ci-sep">&nbsp;·&nbsp;</span>
+        <span>${allRows.length.toLocaleString()} rows loaded</span>
+        <button class="ci-toggle" id="ciToggle">All columns ▾</button>
+        <div class="ci-all-cols" id="ciAllCols">${allColsHtml}</div>
+      `;
+      ci.classList.add('visible');
+      document.getElementById('ciToggle').addEventListener('click', () => {
+        const d = document.getElementById('ciAllCols');
+        d.classList.toggle('open');
+        document.getElementById('ciToggle').textContent =
+          d.classList.contains('open') ? 'Hide ▴' : 'All columns ▾';
+      });
+    }
 
     document.getElementById('fetchBadge').textContent =
       `Updated ${new Date().toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}`;
