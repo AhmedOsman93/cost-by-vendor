@@ -430,6 +430,15 @@ function dateFromMonthAndDay(monthStr, dayNum) {
       return new Date(Date.UTC(d.getFullYear(), d.getMonth(), day));
   }
 
+  // "Jan-24" or "Jan-2024" (abbreviated month + dash + 2 or 4-digit year)
+  const m1b = m.match(/([a-zA-Z]+)-(\d{2,4})/);
+  if (m1b) {
+    const yr = m1b[2].length === 2 ? 2000 + parseInt(m1b[2], 10) : parseInt(m1b[2], 10);
+    const d  = new Date(`${m1b[1]} 1, ${yr}`);
+    if (!isNaN(d) && d.getFullYear() > 2000)
+      return new Date(Date.UTC(d.getFullYear(), d.getMonth(), day));
+  }
+
   // "2024-01" or "2024/01"
   const m2 = m.match(/(\d{4})[-\/](\d{1,2})/);
   if (m2) {
@@ -437,8 +446,19 @@ function dateFromMonthAndDay(monthStr, dayNum) {
     if (yr > 2000) return new Date(Date.UTC(yr, mo - 1, day));
   }
 
-  // Maybe Month is itself a full date
-  return parseDate(m);
+  // "01/2024" or "01-2024" (month first)
+  const m3 = m.match(/^(\d{1,2})[-\/](\d{4})$/);
+  if (m3) {
+    const mo = parseInt(m3[1], 10), yr = parseInt(m3[2], 10);
+    if (yr > 2000) return new Date(Date.UTC(yr, mo - 1, day));
+  }
+
+  // Maybe Month is itself a full date — use it but override the day
+  const parsed = parseDate(m);
+  if (parsed && parsed.getFullYear() > 2000)
+    return new Date(Date.UTC(parsed.getFullYear(), parsed.getMonth(), day));
+
+  return null;
 }
 const fmtDate = d => d.toISOString().split('T')[0];
 const fmtUSD  = n => new Intl.NumberFormat('en-US', {
@@ -531,12 +551,12 @@ async function loadSheet() {
 function parseSheet(results) {
   const fields = results.meta.fields || [];
 
-  // ── Column detection ──────────────────────────────────────────────────────
+  // ── Column detection (strip BOM + whitespace before comparing) ───────────
   let dayCol, monthCol, vendorCol, costCol;
   for (const f of fields) {
-    const n = f.toLowerCase().trim();
+    const n = f.replace(/^\uFEFF/, '').toLowerCase().trim();
     if (!dayCol    && (n === 'day' || n === 'date' || n.startsWith('day'))) dayCol = f;
-    if (!monthCol  && n === 'month') monthCol = f;
+    if (!monthCol  && (n === 'month' || n.includes('month'))) monthCol = f;
     if (!vendorCol && (n.includes('vendor') || n.includes('source') || n.includes('channel') || n === 'network')) vendorCol = f;
     if (!costCol   && (n.includes('cost') || n.includes('spend') || n.includes('amount'))) costCol = f;
   }
@@ -870,10 +890,20 @@ async function init() {
     allRows = parseSheet(results);
 
     if (!allRows.length) {
+      // Build inline diagnostics so we can see the raw data without needing the console
+      const rawCount  = results?.data?.length ?? 0;
+      const rawFields = results?.meta?.fields ?? [];
+      const rawRow0   = results?.data?.[0]   ?? {};
+      const debugJson = JSON.stringify({ detectedFields: rawFields, firstRow: rawRow0 }, null, 2);
       document.getElementById('kpiRow').innerHTML = `
         <div class="error-box">
-          No data found. Ensure the sheet is set to <strong>"Anyone with the link can view"</strong>
-          in Google Sheets → Share settings.
+          <strong>No data parsed.</strong> The sheet was fetched (${rawCount} raw row${rawCount !== 1 ? 's' : ''}),
+          but no rows could be converted to valid dates.<br><br>
+          Ensure the sheet is set to <strong>"Anyone with the link can view"</strong>.<br><br>
+          <details>
+            <summary style="cursor:pointer;font-weight:600;color:#b84c1c">▶ Click to see raw data (share this to get help)</summary>
+            <pre style="margin-top:8px;padding:10px;background:#fff3f0;border:1px solid #f4c0a8;border-radius:6px;font-size:11px;text-align:left;overflow:auto;white-space:pre-wrap">${debugJson.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
+          </details>
         </div>`;
       return;
     }
