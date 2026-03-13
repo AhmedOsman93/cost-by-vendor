@@ -325,7 +325,7 @@
    CONFIG
 ───────────────────────────────────────────────── */
 const SHEET_ID  = '1svRcPjNERO32cVtZcBTdH-dVIfJ2CxNIpGqHSLBezNY';
-const GID       = '448100535';
+const GID       = '1888284710';
 const CSV_URL   = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${GID}`;
 const CSV_URL_B = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}`;
 
@@ -520,7 +520,8 @@ async function loadSheet() {
   // ── Path 1: embedded JSON (baked in by update-dashboard.py) ──
   if (Array.isArray(EMBEDDED_DATA) && EMBEDDED_DATA.length > 0) {
     console.log('Using embedded data:', EMBEDDED_DATA.length, 'rows');
-    return { data: EMBEDDED_DATA, meta: { fields: Object.keys(EMBEDDED_DATA[0]) } };
+    // Embedded data is already array-of-objects; wrap for parseSheet
+    return { isRaw: false, data: EMBEDDED_DATA, meta: { fields: Object.keys(EMBEDDED_DATA[0]) } };
   }
 
   // ── Path 2: live fetch ──
@@ -534,7 +535,9 @@ async function loadSheet() {
     try {
       const text = await fetchCSV(url);
       console.log(`Loaded via: ${label}`);
-      return Papa.parse(text, { header: true, skipEmptyLines: true });
+      // Parse as raw 2D array so we can handle any sheet layout
+      const raw = Papa.parse(text, { skipEmptyLines: false });
+      return { isRaw: true, data: raw.data };
     } catch (e) {
       console.warn(`[${label}] failed:`, e.message);
       lastErr = e;
@@ -548,50 +551,166 @@ async function loadSheet() {
   );
 }
 
-function parseSheet(results) {
-  const fields = results.meta.fields || [];
+/* ── parseSheet ──────────────────────────────────────────────────────────────
+   Handles two layouts automatically:
 
-  // ── Column detection (strip BOM + whitespace before comparing) ───────────
+   WIDE  (Supermetrics pivot):  row 0 = date headers, col 0 = vendor names
+         Example header: ["Vendor","01/03/2026","02/03/2026",…]
+         Data rows:       ["Google", 1200, 3400, …]
+
+   LONG  (tidy format):         columns are Day, Month, Vendor, Cost
+         Example header: ["Day","Month","Vendor","Cost (USD)"]
+         Data rows:       ["15","January 2025","Google","1234"]
+──────────────────────────────────────────────────────────────────────────── */
+function parseSheet(result) {
+  // ── Embedded data (array-of-objects) → legacy long-format path ────────────
+  if (!result.isRaw) {
+    return parseLongObjects(result.data, result.meta.fields || []);
+  }
+
+  // ── Raw 2D array ──────────────────────────────────────────────────────────
+  // Filter completely blank rows but keep row indices intact for header search
+  const raw = result.data;
+  console.log('Raw rows (first 4):', JSON.stringify(raw.slice(0, 4)));
+
+  // Find the first row that has ≥2 parseable dates → that's the date-header row
+  // for WIDE format. Also check for long-format column name rows.
+  let wideHeaderIdx = -1, longHeaderIdx = -1;
+
+  for (let i = 0; i < Math.min(raw.length, 8); i++) {
+    const row = raw[i];
+    // Count how many cells parse as valid dates (year > 2010)
+    const dateCells = row.filter(c => {
+      const d = parseDate(String(c).trim());
+      return d && d.getFullYear() > 2010;
+    });
+    if (dateCells.length >= 2 && wideHeaderIdx === -1) {
+      wideHeaderIdx = i;
+    }
+    // Check for long-format column names
+    const lower = row.map(c => String(c).toLowerCase().trim());
+    const hasVendorCol = lower.some(n =>
+      n === 'platform' || n.includes('vendor') || n.includes('source') ||
+      n === 'network'  || n.includes('channel'));
+    const hasDateCol   = lower.some(n => n === 'day' || n === 'date' || n === 'month');
+    if ((hasVendorCol || hasDateCol) && longHeaderIdx === -1) {
+      longHeaderIdx = i;
+    }
+  }
+
+  console.log('Format detection →', { wideHeaderIdx, longHeaderIdx });
+
+  // ── Attempt WIDE format first ─────────────────────────────────────────────
+  if (wideHeaderIdx !== -1) {
+    const headerRow = raw[wideHeaderIdx];
+
+    // Map column index → date
+    const dateCols = [];
+    for (let c = 0; c < headerRow.length; c++) {
+      const d = parseDate(String(headerRow[c]).trim());
+      if (d && d.getFullYear() > 2010) dateCols.push({ c, date: d });
+    }
+
+    // Vendor column: first non-date, non-empty column in the header row
+    let vendorCol = headerRow.findIndex((cell, idx) => {
+      const s = String(cell).trim();
+      if (!s) return false;
+      const d = parseDate(s);
+      return !d || d.getFullYear() <= 2010; // not a date = likely label col
+    });
+    if (vendorCol === -1) vendorCol = 0;
+
+    const rows = [];
+    for (let r = wideHeaderIdx + 1; r < raw.length; r++) {
+      const dataRow = raw[r];
+      const vendor  = String(dataRow[vendorCol] || '').trim();
+      if (!vendor) continue;
+      // Skip summary/total rows
+      if (/^total$/i.test(vendor) || /^grand/i.test(vendor)) continue;
+
+      for (const { c, date } of dateCols) {
+        const cost = parseFloat(String(dataRow[c] || '0').replace(/[$,\s%]/g, '')) || 0;
+        rows.push({ date, dateKey: fmtDate(date), vendor, cost });
+      }
+    }
+
+    if (rows.length > 0) {
+      console.log(`WIDE format: ${rows.length} rows from ${dateCols.length} date columns`);
+      return rows;
+    }
+  }
+
+  // ── Attempt LONG format ───────────────────────────────────────────────────
+  if (longHeaderIdx !== -1) {
+    const header = raw[longHeaderIdx].map(c => String(c).replace(/^\uFEFF/, '').toLowerCase().trim());
+    const dayIdx    = header.findIndex(n => n === 'day' || n === 'date' || n.startsWith('day'));
+    const monthIdx  = header.findIndex(n => n === 'month' || n.includes('month'));
+    // Prioritise exact names (platform, vendor, network) before partial matches
+    const vendorIdx = (() => {
+      let i = header.findIndex(n => n === 'platform' || n === 'vendor' || n === 'network' || n === 'source');
+      if (i !== -1) return i;
+      i = header.findIndex(n => n.includes('platform') || n.includes('vendor') || n.includes('source'));
+      if (i !== -1) return i;
+      return header.findIndex(n => n.includes('channel')); // last resort
+    })();
+    const costIdx   = header.findIndex(n => n.includes('cost') || n.includes('spend') || n.includes('amount'));
+
+    const dI = dayIdx    !== -1 ? dayIdx    : 0;
+    const vI = vendorIdx !== -1 ? vendorIdx : 2;
+    const cI = costIdx   !== -1 ? costIdx   : 3;
+
+    const rows = [];
+    for (let r = longHeaderIdx + 1; r < raw.length; r++) {
+      const row = raw[r];
+      let d = parseDate(String(row[dI] || '').trim());
+      if (!d || d.getFullYear() < 2010 || d.getFullYear() > 2040) {
+        const dayNum = parseInt(String(row[dI] || '1'), 10);
+        const mStr   = monthIdx !== -1 ? String(row[monthIdx] || '') : null;
+        d = dateFromMonthAndDay(mStr, dayNum);
+      }
+      if (!d || d.getFullYear() < 2010 || d.getFullYear() > 2040) continue;
+      const vendor = String(row[vI] || '').trim();
+      if (!vendor) continue;
+      const cost = parseFloat(String(row[cI] || '0').replace(/[$,\s]/g, '')) || 0;
+      rows.push({ date: d, dateKey: fmtDate(d), vendor, cost });
+    }
+
+    if (rows.length > 0) {
+      console.log(`LONG format: ${rows.length} rows`);
+      return rows;
+    }
+  }
+
+  console.warn('Could not parse sheet — neither wide nor long format detected.');
+  return [];
+}
+
+/* Legacy path for embedded data (array-of-objects) */
+function parseLongObjects(data, fields) {
   let dayCol, monthCol, vendorCol, costCol;
   for (const f of fields) {
     const n = f.replace(/^\uFEFF/, '').toLowerCase().trim();
     if (!dayCol    && (n === 'day' || n === 'date' || n.startsWith('day'))) dayCol = f;
     if (!monthCol  && (n === 'month' || n.includes('month'))) monthCol = f;
-    if (!vendorCol && (n.includes('vendor') || n.includes('source') || n.includes('channel') || n === 'network')) vendorCol = f;
+    if (!vendorCol && (n === 'platform' || n === 'vendor' || n === 'network' || n === 'source' || n.includes('platform') || n.includes('vendor') || n.includes('source'))) vendorCol = f;
     if (!costCol   && (n.includes('cost') || n.includes('spend') || n.includes('amount'))) costCol = f;
   }
-  // Positional fallback
   if (!dayCol)    dayCol    = fields[0];
   if (!vendorCol) vendorCol = fields[2];
   if (!costCol)   costCol   = fields[3];
 
-  // Log a sample row so we can see the raw format if anything goes wrong
-  if (results.data.length > 0) {
-    console.log('Columns detected →', { dayCol, monthCol, vendorCol, costCol });
-    console.log('Sample row       →', results.data[0]);
-  }
-
-  // ── Row parsing ───────────────────────────────────────────────────────────
   const rows = [];
-  for (const r of results.data) {
-    // Try parsing the Day column as a full date first
+  for (const r of data) {
     let d = parseDate(r[dayCol]);
-
-    // If that failed or returned an implausible year, combine Month + Day
     if (!d || d.getFullYear() < 2010 || d.getFullYear() > 2040) {
-      const dayNum = parseInt(String(r[dayCol] || '1'), 10);
-      d = dateFromMonthAndDay(monthCol ? r[monthCol] : null, dayNum);
+      d = dateFromMonthAndDay(monthCol ? r[monthCol] : null, parseInt(String(r[dayCol] || '1'), 10));
     }
-
     if (!d || d.getFullYear() < 2010 || d.getFullYear() > 2040) continue;
-
     const vendor = String(r[vendorCol] || '').trim();
     if (!vendor) continue;
     const cost = parseFloat(String(r[costCol] || '0').replace(/[$,\s]/g, '')) || 0;
     rows.push({ date: d, dateKey: fmtDate(d), vendor, cost });
   }
-
-  console.log(`Parsed ${rows.length} valid rows from ${results.data.length} raw rows`);
   return rows;
 }
 
@@ -890,15 +1009,13 @@ async function init() {
     allRows = parseSheet(results);
 
     if (!allRows.length) {
-      // Build inline diagnostics so we can see the raw data without needing the console
-      const rawCount  = results?.data?.length ?? 0;
-      const rawFields = results?.meta?.fields ?? [];
-      const rawRow0   = results?.data?.[0]   ?? {};
-      const debugJson = JSON.stringify({ detectedFields: rawFields, firstRow: rawRow0 }, null, 2);
+      const rawCount = results?.data?.length ?? 0;
+      // Show first 4 rows of raw array (tells us the exact sheet layout)
+      const preview  = (results?.data ?? []).slice(0, 4);
+      const debugJson = JSON.stringify({ rawRowCount: rawCount, first4Rows: preview }, null, 2);
       document.getElementById('kpiRow').innerHTML = `
         <div class="error-box">
-          <strong>No data parsed.</strong> The sheet was fetched (${rawCount} raw row${rawCount !== 1 ? 's' : ''}),
-          but no rows could be converted to valid dates.<br><br>
+          <strong>No data parsed.</strong> Sheet fetched (${rawCount} raw rows) but no valid rows found.<br><br>
           Ensure the sheet is set to <strong>"Anyone with the link can view"</strong>.<br><br>
           <details>
             <summary style="cursor:pointer;font-weight:600;color:#b84c1c">▶ Click to see raw data (share this to get help)</summary>
